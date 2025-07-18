@@ -1,9 +1,10 @@
 import unittest.mock
 from collections import OrderedDict
 from functools import wraps
+from typing import Callable
 
 
-def lru_cache(func=None, *, maxsize: int | None = None):
+def lru_cache(func: Callable | None = None, *, maxsize: int | None = None):
     if func is None:
         return lambda f: lru_cache(f, maxsize=maxsize)
 
