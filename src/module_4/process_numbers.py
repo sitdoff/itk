@@ -4,7 +4,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import wraps
 from multiprocessing import Process, Queue
 from random import randint
-from time import monotonic
+from time import perf_counter
 
 from tabulate import tabulate
 
@@ -18,9 +18,9 @@ def time_it(title: str):
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            start = monotonic()
+            start = perf_counter()
             result = func(*args, **kwargs)
-            end = monotonic()
+            end = perf_counter()
             diff = end - start
             return title, f"{diff:.6f}"
 
@@ -166,7 +166,7 @@ def frite_data(data: list | tuple, file_path: str) -> None:
 
 
 def main() -> None:
-    numbers = generate_data(1000)
+    numbers = generate_data(5000)
     count = os.cpu_count() or 1
     data = (
         sequence_processing(numbers),
