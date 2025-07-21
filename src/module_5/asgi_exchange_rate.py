@@ -1,3 +1,6 @@
+# Запуск через uvicorn из корневой папки репозитория:
+#     uvicorn srs.module_5.asgi_exchange_rate:app --host 0.0.0.0 --port 8000
+
 import json
 import logging
 from functools import wraps
@@ -37,9 +40,10 @@ def validate_signs(signs: str) -> None:
 
 def validate_raw_uri(raw_uri: str | None) -> None:
     if raw_uri is None:
+        logger.error("Request error: RAW_URI is None")
         raise ValueError("Request error: RAW_URI is None")
     if raw_uri in {"/", "/favicon.ico"}:
-        logger.debug("Prefix is %s, request is not for exchange rate", raw_uri)
+        logger.debug("Path %s is not for exchange rate", raw_uri)
         raise NotFound("Request is not for exchange rate")
 
 
@@ -51,11 +55,7 @@ def get_currency_signs(scope: dict) -> str:
     logger.debug("scope.path: %s", raw_uri)
     validate_raw_uri(raw_uri)
     signs = raw_uri.split("/")[1].lower()
-    try:
-        validate_signs(signs)
-    except ValueError as exc:
-        logger.error('Error: %s. Signs "%s" are not valid', exc, signs)
-        raise exc
+    validate_signs(signs)
     logger.debug("Prefix is %s", signs)
     return signs
 
