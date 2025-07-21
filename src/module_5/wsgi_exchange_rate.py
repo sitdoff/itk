@@ -3,7 +3,6 @@
 
 import json
 import logging
-import re
 from functools import wraps
 
 import requests
@@ -21,7 +20,11 @@ logging.basicConfig(
 logger = logging.getLogger("WSGI")
 
 
-def validate_signs(signs: str):
+class NotFound(Exception):
+    pass
+
+
+def validate_signs(signs: str) -> None:
     """
     Проверяет что символы валюты соответствуют требуемым параметрам
     """
@@ -31,16 +34,22 @@ def validate_signs(signs: str):
         raise ValueError("Signs should be at least 3 letters")
 
 
-def get_currency_signs(environ):
+def validate_raw_uri(raw_uri: str | None) -> None:
+    if raw_uri is None:
+        raise ValueError("Request error: RAW_URI is None")
+    if raw_uri in {"/", "/favicon.ico"}:
+        logger.debug("Prefix is %s, request is not for exchange rate", raw_uri)
+        raise NotFound("Request is not for exchange rate")
+
+
+def get_currency_signs(environ: dict) -> str:
     """
     Извлекает символы валюты из uri
     """
-    raw_uri = environ.get("RAW_URI")
+    raw_uri = environ.get("RAW_URI", "/")
     logger.debug("environ.RAW_URI: %s", raw_uri)
-    if raw_uri in {"/", "/favicon.ico"}:
-        logger.debug("Prefix is %s, request is not for exchange rate", raw_uri)
-        raise ValueError("Request is not for exchange rate")
-    signs = re.findall(r"\/(\w+)", raw_uri)[0].lower()
+    validate_raw_uri(raw_uri)
+    signs = raw_uri.split("/")[1].lower()
     try:
         validate_signs(signs)
     except ValueError as exc:
@@ -50,7 +59,7 @@ def get_currency_signs(environ):
     return signs
 
 
-def get_exchange_rate(currency_signs):
+def get_exchange_rate(currency_signs: str) -> bytes:
     """
     Получает данные от стороннего api для указанных символов валют
     """
@@ -103,6 +112,13 @@ def exception_handler(headers):
                     headers=headers,
                     message="An error occurred while processing the request",
                 )
+            except NotFound as exc:
+                return exception_response(
+                    start_response,
+                    status="404 NOT FOUND",
+                    headers=headers,
+                    message=str(exc),
+                )
 
         return wrapper
 
@@ -110,7 +126,7 @@ def exception_handler(headers):
 
 
 @exception_handler(headers=[("Content-Type", "application/json")])
-def app(environ, start_response, headers):
+def app(environ, start_response, headers=None):
     currency_signs = get_currency_signs(environ)
     exchange_rate_data = get_exchange_rate(currency_signs)
     start_response(status="200 OK", headers=headers)
