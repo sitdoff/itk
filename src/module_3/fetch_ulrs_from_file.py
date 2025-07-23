@@ -13,10 +13,30 @@ TIMEOUT = 60
 LIMIT = 5
 
 
+def parse_json_file(
+    tmp_file: str,
+    result_file: str,
+    url,
+) -> None:
+    """
+    Добавляет содержимое временного файла в
+    файл с итоговым результатом.
+    """
+
+    async def merge_file(tmp_file, result_file):
+        async with aiofiles.open(tmp_file, "r") as file:
+            async with aiofiles.open(result_file, "a") as result:
+                await result.write(
+                    json.dumps({"url": url, "content": json.loads(await file.read())})
+                    + "\n"
+                )
+
+    asyncio.run(merge_file(tmp_file, result_file))
+
+
 async def handler(
     session: ClientSession,
     queue: Queue,
-    file,
     file_lock: Lock,
 ):
     while True:
@@ -27,20 +47,28 @@ async def handler(
 
         try:
             async with session.get(url) as response:
-                if response.status == 200:
-                    content = await response.json(content_type=None)
-                    line = json.dumps(
-                        {"url": url, "content": content}, ensure_ascii=False
-                    )
-                    async with file_lock:
-                        await file.write(line + "\n")
+                async with aiofiles.tempfile.NamedTemporaryFile(
+                    "wb+",
+                    delete_on_close=False,
+                ) as tmp_file:
+                    if response.status == 200:
+                        async for chunk in response.content.iter_chunked(1024):
+                            await tmp_file.write(chunk)
+                            await tmp_file.flush()
+                        async with file_lock:
+                            await asyncio.to_thread(
+                                parse_json_file,
+                                str(tmp_file.name),
+                                RESULT_FILE,
+                                url,
+                            )
         except (ClientConnectorDNSError, TimeoutError, JSONDecodeError) as exc:
             print(exc)
         finally:
             queue.task_done()
 
 
-async def fetch_uls(urls_path: str, results_path: str) -> None:
+async def fetch_urls(urls_path: str, results_path: str) -> None:
     queue: Queue[str] = Queue(maxsize=QUEUE_MAXSIZE)
     lock: Lock = Lock()
 
@@ -48,25 +76,24 @@ async def fetch_uls(urls_path: str, results_path: str) -> None:
     connector: TCPConnector = TCPConnector(limit=LIMIT)
 
     async with ClientSession(connector=connector, timeout=timeout) as session:
-        async with aiofiles.open(urls_path, "w", encoding="utf-8") as result_file:
-            workers = [
-                asyncio.create_task(
-                    handler(session, queue, result_file, lock),
-                )
-                for _ in range(LIMIT)
-            ]
+        workers = [
+            asyncio.create_task(
+                handler(session, queue, lock),
+            )
+            for _ in range(LIMIT)
+        ]
 
-            async with aiofiles.open(results_path, "r", encoding="utf-8") as urls_file:
-                async for line in urls_file:
-                    url = line.strip()
-                    await queue.put(url)
+        async with aiofiles.open(urls_path, "r", encoding="utf-8") as urls_file:
+            async for line in urls_file:
+                url = line.strip()
+                await queue.put(url)
 
-            await queue.join()
+        await queue.join()
 
-            for worker in workers:
-                worker.cancel()
-            await asyncio.gather(*workers)
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers)
 
 
 if __name__ == "__main__":
-    asyncio.run(fetch_uls(URLS_FILE, RESULT_FILE))
+    asyncio.run(fetch_urls(URLS_FILE, RESULT_FILE))
