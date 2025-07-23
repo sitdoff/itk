@@ -1,10 +1,12 @@
 import asyncio
 import json
-from asyncio import CancelledError, Lock, Queue, TimeoutError
+import threading
+from asyncio import CancelledError, Queue, TimeoutError
 from json import JSONDecodeError
 
 import aiofiles
 from aiohttp import ClientConnectorDNSError, ClientSession, ClientTimeout, TCPConnector
+from aiologic import Lock
 
 URLS_FILE = "urls.txt"
 RESULT_FILE = "results.jsonl"
@@ -13,25 +15,39 @@ TIMEOUT = 60
 LIMIT = 5
 
 
-def parse_json_file(
-    tmp_file: str,
+async def merge_file(tmp_files: dict[str, str], result_file: str):
+    """
+    Перебирает временные файлы и записывает данные из них
+    в файл с общими результатами
+    """
+    async with aiofiles.open(result_file, "a") as result:
+        for url, tmp_file_path in tmp_files.items():
+            async with aiofiles.open(tmp_file_path, "r", encoding="utf-8") as file:
+                try:
+                    await result.write(
+                        json.dumps(
+                            {
+                                "url": url,
+                                "content": json.loads(await file.read()),
+                            }
+                        )
+                        + "\n"
+                    )
+                except JSONDecodeError as exc:
+                    print(f"File {tmp_file_path} has a trouble: {exc}")
+
+
+def merge_files(
+    tmp_files: dict[str, str],
     result_file: str,
-    url,
 ) -> None:
     """
-    Добавляет содержимое временного файла в
-    файл с итоговым результатом.
-    """
+        Добавляет содержимое временных файлов в
+        файл с итоговым результатом.
+    r"""
 
-    async def merge_file(tmp_file, result_file):
-        async with aiofiles.open(tmp_file, "r") as file:
-            async with aiofiles.open(result_file, "a") as result:
-                await result.write(
-                    json.dumps({"url": url, "content": json.loads(await file.read())})
-                    + "\n"
-                )
-
-    asyncio.run(merge_file(tmp_file, result_file))
+    print("Current thread:", threading.current_thread().name)
+    asyncio.run(merge_file(tmp_files, result_file))
 
 
 async def handler(
@@ -39,36 +55,42 @@ async def handler(
     queue: Queue,
     file_lock: Lock,
 ):
+    tmp_files = {}
     while True:
         try:
             url = await queue.get()
         except CancelledError:
+            # Если на первом await поймали CancelledError,
+            # то мерджим готовые файлы этого воркера
+            # в общий результат
+            if tmp_files:
+                async with file_lock:
+                    await asyncio.to_thread(
+                        merge_files,
+                        tmp_files,
+                        RESULT_FILE,
+                    )
             break
 
         try:
             async with session.get(url) as response:
                 async with aiofiles.tempfile.NamedTemporaryFile(
                     "wb+",
-                    delete_on_close=False,
+                    delete=False,
                 ) as tmp_file:
                     if response.status == 200:
                         async for chunk in response.content.iter_chunked(1024):
                             await tmp_file.write(chunk)
+                        else:
                             await tmp_file.flush()
-                        async with file_lock:
-                            await asyncio.to_thread(
-                                parse_json_file,
-                                str(tmp_file.name),
-                                RESULT_FILE,
-                                url,
-                            )
-        except (ClientConnectorDNSError, TimeoutError, JSONDecodeError) as exc:
+                            tmp_files[url] = str(tmp_file.name)
+        except (ClientConnectorDNSError, TimeoutError) as exc:
             print(exc)
         finally:
             queue.task_done()
 
 
-async def fetch_urls(urls_path: str, results_path: str) -> None:
+async def fetch_urls(urls_path: str) -> None:
     queue: Queue[str] = Queue(maxsize=QUEUE_MAXSIZE)
     lock: Lock = Lock()
 
@@ -96,4 +118,4 @@ async def fetch_urls(urls_path: str, results_path: str) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(fetch_urls(URLS_FILE, RESULT_FILE))
+    asyncio.run(fetch_urls(URLS_FILE))
